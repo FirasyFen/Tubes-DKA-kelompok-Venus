@@ -242,14 +242,14 @@ def evaluasi_dataset(df: pd.DataFrame):
     akurasi_mamdani_kategori = (hasil_df["kategori_mamdani"] == hasil_df["kategori_asli"]).mean() * 100
     akurasi_sugeno_kategori = (hasil_df["kategori_sugeno"] == hasil_df["kategori_asli"]).mean() * 100
 
-    akurasi_mamdani_toleransi = (abs(hasil_df["kualitas_mamdani"] - hasil_df["kualitas_asli"]) <= 1).mean() * 100
-    akurasi_sugeno_toleransi = (abs(hasil_df["kualitas_sugeno"] - hasil_df["kualitas_asli"]) <= 1).mean() * 100
+    akurasi_mamdani_kualitas = (abs(hasil_df["kualitas_mamdani"] - hasil_df["kualitas_asli"]) <= 1).mean() * 100
+    akurasi_sugeno_kualitas = (abs(hasil_df["kualitas_sugeno"] - hasil_df["kualitas_asli"]) <= 1).mean() * 100
 
     metrik = {
         "akurasi_mamdani_kategori": akurasi_mamdani_kategori,
         "akurasi_sugeno_kategori": akurasi_sugeno_kategori,
-        "akurasi_mamdani_toleransi": akurasi_mamdani_toleransi,
-        "akurasi_sugeno_toleransi": akurasi_sugeno_toleransi,
+        "akurasi_mamdani_kualitas": akurasi_mamdani_kualitas,
+        "akurasi_sugeno_kualitas": akurasi_sugeno_kualitas,
     }
     return hasil_df, metrik
 
@@ -459,10 +459,10 @@ with tab_evaluasi:
                 ak1, ak2 = st.columns(2)
                 with ak1:
                     st.metric("Akurasi Mamdani (kategori)", f"{metrik['akurasi_mamdani_kategori']:.2f}%")
-                    st.metric("Akurasi Mamdani (Kualitas \u00b11)", f"{metrik['akurasi_mamdani_Kualitas']:.2f}%")
+                    st.metric("Akurasi Mamdani (kualitas \u00b11)", f"{metrik['akurasi_mamdani_kualitas']:.2f}%")
                 with ak2:
                     st.metric("Akurasi Sugeno (kategori)", f"{metrik['akurasi_sugeno_kategori']:.2f}%")
-                    st.metric("Akurasi Sugeno (Kualitas \u00b11)", f"{metrik['akurasi_sugeno_Kualitas']:.2f}%")
+                    st.metric("Akurasi Sugeno (kualitas \u00b11)", f"{metrik['akurasi_sugeno_kualitas']:.2f}%")
 
                 st.markdown("### Detail Hasil per Baris")
                 st.dataframe(hasil_df, use_container_width=True)
