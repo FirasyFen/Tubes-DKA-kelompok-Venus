@@ -1,23 +1,32 @@
 """
-Sistem Fuzzy Mamdani & Sugeno - Prediksi Kualitas Wine
-=======================================================
-Aplikasi Streamlit hasil gabungan dari:
-  - tubes_DKA_ver3.ipynb        -> engine fuzzy (fuzzifikasi, rule base, defuzzifikasi)
-  - Menghitung_Akurasi.ipynb    -> evaluasi akurasi Mamdani vs Sugeno pada dataset
+Sistem Fuzzy Mamdani & Sugeno - Prediksi Kualitas Wine (White Wine)
+=====================================================================
+Aplikasi Streamlit hasil gabungan dari dua notebook:
+  - tubes_DKA_ver3.ipynb     -> mesin fuzzy (fuzzifikasi, rule base, defuzzifikasi
+                                 Mamdani & Sugeno, visualisasi fungsi keanggotaan)
+  - Menghitung_Akurasi.ipynb -> evaluasi akurasi Mamdani vs Sugeno pada dataset,
+                                 confusion matrix, dan korelasi antar variabel
+
+Variabel input yang dipakai (sesuai dataset winequality-white-indonesia.csv):
+  free sulfur dioxide, residual sugar, citric acid, pH, sulphates, alcohol
 
 Cara menjalankan:
-    pip install streamlit numpy pandas matplotlib
+    pip install streamlit numpy pandas matplotlib seaborn scikit-learn
+    atau pip install -r requirements.txt
     streamlit run fuzzy_wine_quality_app.py
 """
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 import streamlit as st
+from sklearn.metrics import confusion_matrix
 
-# =========================================================
-# 1. FUNGSI KEANGGOTAAN DASAR
-# =========================================================
+# =====================================================================
+# 1. FUNGSI KEANGGOTAAN DASAR (segitiga & trapesium)
+# =====================================================================
+
 
 def perhitungan_triangle(x, a, b, c):
     if x <= a or x >= c:
@@ -41,22 +50,22 @@ def perhitungan_trapezoidal(x, a, b, c, d):
         return 1.0 if d == c else (d - x) / (d - c)
 
 
-triangle_vec = np.vectorize(perhitungan_triangle)
-trapez_vec = np.vectorize(perhitungan_trapezoidal)
-
-# =========================================================
+# =====================================================================
 # 2. FUZZIFIKASI SETIAP VARIABEL INPUT
-# =========================================================
+# =====================================================================
 
-def nilai_fa(x):
+
+def nilai_fsd(x):
+    """Free Sulfur Dioxide"""
     return {
-        "tinggi": perhitungan_trapezoidal(x, 8, 10, 15, 15),
-        "sedang": perhitungan_trapezoidal(x, 5, 6, 8, 9),
-        "rendah": perhitungan_trapezoidal(x, 3, 3, 5, 6),
+        "tinggi": perhitungan_trapezoidal(x, 45, 60, 100, 100),
+        "sedang": perhitungan_trapezoidal(x, 20, 30, 45, 60),
+        "rendah": perhitungan_trapezoidal(x, 0, 0, 20, 30),
     }
 
 
 def nilai_rs(x):
+    """Residual Sugar"""
     return {
         "tinggi": perhitungan_trapezoidal(x, 15, 20, 70, 70),
         "sedang": perhitungan_trapezoidal(x, 4, 5, 15, 20),
@@ -64,15 +73,17 @@ def nilai_rs(x):
     }
 
 
-def nilai_den(x):
+def nilai_ca(x):
+    """Citric Acid"""
     return {
-        "tinggi": perhitungan_trapezoidal(x, 0.998, 1, 1.04, 1.04),
-        "normal": perhitungan_trapezoidal(x, 0.992, 0.994, 0.998, 1),
-        "rendah": perhitungan_trapezoidal(x, 0.987, 0.987, 0.992, 0.994),
+        "tinggi": perhitungan_trapezoidal(x, 0.40, 0.50, 1.66, 1.66),
+        "sedang": perhitungan_trapezoidal(x, 0.20, 0.30, 0.40, 0.50),
+        "rendah": perhitungan_trapezoidal(x, 0.00, 0.00, 0.20, 0.30),
     }
 
 
 def nilai_ph(x):
+    """pH"""
     return {
         "basa": perhitungan_trapezoidal(x, 3.4, 3.5, 4, 4),
         "normal": perhitungan_trapezoidal(x, 3, 3.1, 3.4, 3.5),
@@ -81,6 +92,7 @@ def nilai_ph(x):
 
 
 def nilai_sul(x):
+    """Sulphates"""
     return {
         "tinggi": perhitungan_trapezoidal(x, 0.7, 0.8, 1.2, 1.2),
         "sedang": perhitungan_trapezoidal(x, 0.4, 0.5, 0.7, 0.8),
@@ -89,6 +101,7 @@ def nilai_sul(x):
 
 
 def nilai_al(x):
+    """Alcohol"""
     return {
         "tinggi": perhitungan_trapezoidal(x, 11, 12, 15, 15),
         "sedang": perhitungan_triangle(x, 9, 10.5, 12),
@@ -96,9 +109,9 @@ def nilai_al(x):
     }
 
 
-# =========================================================
+# =====================================================================
 # 3. FUZZIFIKASI OUTPUT (QUALITY) & KATEGORI CRISP
-# =========================================================
+# =====================================================================
 
 RANGE_QUALITAS = np.arange(1, 10.01, 0.1)
 
@@ -112,16 +125,17 @@ def qualitas(x):
 
 
 def kategori_dari_nilai(v):
-    if v >= 1 and v < 4:
+    """Kategori hasil defuzzifikasi (Mamdani/Sugeno)."""
+    if v < 4:
         return "buruk"
-    elif v >= 4 and v <= 7:
+    elif v <= 7:
         return "standar"
     else:
         return "bagus"
 
 
 def kategori_quality_asli(v):
-    """Kategori label asli dataset (digunakan saat evaluasi akurasi)."""
+    """Kategori label kualitas asli pada dataset."""
     if v <= 4:
         return "buruk"
     elif v <= 7:
@@ -130,44 +144,45 @@ def kategori_quality_asli(v):
         return "bagus"
 
 
-# =========================================================
+# =====================================================================
 # 4. MESIN INFERENSI FUZZY (RULE BASE + DEFUZZIFIKASI)
-# =========================================================
+# =====================================================================
 
-def proses_fuzzy(fa, rs, d, p, s, a):
-    fixed_acidity = nilai_fa(fa)
+
+def proses_fuzzy(fsd, rs, ca, p, s, a):
+    free_sulfur_dioxide = nilai_fsd(fsd)
     residual_sugar = nilai_rs(rs)
-    densitas = nilai_den(d)
+    citric_acid = nilai_ca(ca)
     ph = nilai_ph(p)
     sulphates = nilai_sul(s)
     alkohol = nilai_al(a)
 
-    # --- Rule base: kualitas buruk ---
+    # ---- Aturan kualitas BURUK ----
     r1 = min(alkohol["rendah"], sulphates["rendah"])
-    r2 = min(densitas["tinggi"], alkohol["rendah"])
+    r2 = min(free_sulfur_dioxide["tinggi"], alkohol["rendah"])
     r3 = min(ph["asam"], alkohol["rendah"])
-    r4 = min(fixed_acidity["tinggi"], sulphates["rendah"])
-    r5 = min(alkohol["rendah"], sulphates["rendah"], densitas["tinggi"])
+    r4 = min(citric_acid["rendah"], sulphates["rendah"])
+    r5 = min(alkohol["rendah"], citric_acid["rendah"], free_sulfur_dioxide["tinggi"])
 
-    # --- Rule base: kualitas standar ---
+    # ---- Aturan kualitas STANDAR ----
     r6 = min(ph["normal"], residual_sugar["sedang"], alkohol["sedang"])
-    r7 = min(alkohol["sedang"], densitas["normal"])
+    r7 = min(alkohol["sedang"], free_sulfur_dioxide["sedang"])
     r8 = min(ph["normal"], sulphates["sedang"])
     r9 = min(residual_sugar["sedang"], alkohol["sedang"])
-    r10 = fixed_acidity["sedang"]
+    r10 = citric_acid["sedang"]
 
-    # --- Rule base: kualitas bagus ---
+    # ---- Aturan kualitas BAGUS ----
     r11 = min(alkohol["tinggi"], sulphates["tinggi"])
-    r12 = min(alkohol["tinggi"], densitas["rendah"])
+    r12 = min(alkohol["tinggi"], free_sulfur_dioxide["rendah"])
     r13 = min(alkohol["tinggi"], ph["normal"])
-    r14 = min(residual_sugar["tinggi"], sulphates["tinggi"])
-    r15 = min(densitas["rendah"], max(sulphates["sedang"], sulphates["tinggi"]), alkohol["tinggi"])
+    r14 = min(citric_acid["tinggi"], sulphates["tinggi"])
+    r15 = min(alkohol["tinggi"], citric_acid["tinggi"], free_sulfur_dioxide["rendah"])
 
     alpha_buruk = max(r1, r2, r3, r4, r5)
     alpha_standar = max(r6, r7, r8, r9, r10)
     alpha_bagus = max(r11, r12, r13, r14, r15)
 
-    # --- Defuzzifikasi Mamdani (centroid) ---
+    # ---- Defuzzifikasi Mamdani (centroid) ----
     clip_buruk, clip_standar, clip_bagus = [], [], []
     tot_Bi, tot_zxBi = 0.0, 0.0
     for nilai in RANGE_QUALITAS:
@@ -184,13 +199,24 @@ def proses_fuzzy(fa, rs, d, p, s, a):
 
     mamdani = tot_zxBi / tot_Bi if tot_Bi != 0 else 0.0
 
-    # --- Defuzzifikasi Sugeno (weighted average, nilai tetap = puncak MF) ---
+    # ---- Defuzzifikasi Sugeno (weighted average, nilai tetap = puncak MF) ----
     tot_Bi_s = alpha_bagus + alpha_buruk + alpha_standar
     sugeno = (
-        (alpha_bagus * 8.5) + (alpha_standar * 5.5) + (alpha_buruk * 2.5)
-    ) / tot_Bi_s if tot_Bi_s != 0 else 0.0
+        ((alpha_bagus * 8.5) + (alpha_standar * 5.5) + (alpha_buruk * 2.5)) / tot_Bi_s
+        if tot_Bi_s != 0
+        else 0.0
+    )
 
     return {
+        "fuzzifikasi": {
+            "free_sulfur_dioxide": free_sulfur_dioxide,
+            "residual_sugar": residual_sugar,
+            "citric_acid": citric_acid,
+            "ph": ph,
+            "sulphates": sulphates,
+            "alkohol": alkohol,
+        },
+        "rules": [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15],
         "alpha_buruk": alpha_buruk,
         "alpha_standar": alpha_standar,
         "alpha_bagus": alpha_bagus,
@@ -204,79 +230,94 @@ def proses_fuzzy(fa, rs, d, p, s, a):
     }
 
 
-# =========================================================
-# 5. EVALUASI AKURASI PADA DATASET
-# =========================================================
+# =====================================================================
+# 5. EVALUASI DATASET (akurasi, confusion matrix)
+# =====================================================================
 
-@st.cache_data(show_spinner=False)
+KOLOM_DIBUTUHKAN = [
+    "free sulfur dioxide",
+    "residual sugar",
+    "citric acid",
+    "pH",
+    "sulphates",
+    "alcohol",
+    "quality",
+]
+
+
 def evaluasi_dataset(df: pd.DataFrame):
     records = []
     for idx in range(len(df)):
-        fa = float(df["fixed acidity"].iloc[idx])
-        rs = float(df["residual sugar"].iloc[idx])
-        d = float(df["density"].iloc[idx])
-        p = float(df["pH"].iloc[idx])
-        s = float(df["sulphates"].iloc[idx])
-        a = float(df["alcohol"].iloc[idx])
-        q = float(df["quality"].iloc[idx])
+        fsd = float(df["free sulfur dioxide"][idx])
+        rs = float(df["residual sugar"][idx])
+        ca = float(df["citric acid"][idx])
+        p = float(df["pH"][idx])
+        s = float(df["sulphates"][idx])
+        a = float(df["alcohol"][idx])
+        q = float(df["quality"][idx])
 
-        hasil = proses_fuzzy(fa, rs, d, p, s, a)
+        hasil = proses_fuzzy(fsd, rs, ca, p, s, a)
 
-        records.append({
-            "idx": idx,
-            "kualitas_asli": q,
-            "kualitas_mamdani": round(hasil["mamdani"], 4),
-            "kualitas_sugeno": round(hasil["sugeno"], 4),
-            "offset_mamdani": round(abs(q - hasil["mamdani"]), 4),
-            "offset_sugeno": round(abs(q - hasil["sugeno"]), 4),
-            "alpha_buruk": round(hasil["alpha_buruk"], 4),
-            "alpha_standar": round(hasil["alpha_standar"], 4),
-            "alpha_bagus": round(hasil["alpha_bagus"], 4),
-            "kategori_mamdani": hasil["kategori_mamdani"],
-            "kategori_sugeno": hasil["kategori_sugeno"],
-        })
+        records.append(
+            {
+                "idx": idx,
+                "kualitas_asli": q,
+                "kualitas_mamdani": round(hasil["mamdani"], 4),
+                "kualitas_sugeno": round(hasil["sugeno"], 4),
+                "offset_mamdani": round(abs(q - hasil["mamdani"]), 4),
+                "offset_sugeno": round(abs(q - hasil["sugeno"]), 4),
+                "alpha_buruk": round(hasil["alpha_buruk"], 4),
+                "alpha_standar": round(hasil["alpha_standar"], 4),
+                "alpha_bagus": round(hasil["alpha_bagus"], 4),
+                "kategori_mamdani": hasil["kategori_mamdani"],
+                "kategori_sugeno": hasil["kategori_sugeno"],
+            }
+        )
 
     hasil_df = pd.DataFrame(records)
     hasil_df["kategori_asli"] = hasil_df["kualitas_asli"].apply(kategori_quality_asli)
 
-    akurasi_mamdani_kategori = (hasil_df["kategori_mamdani"] == hasil_df["kategori_asli"]).mean() * 100
-    akurasi_sugeno_kategori = (hasil_df["kategori_sugeno"] == hasil_df["kategori_asli"]).mean() * 100
+    akurasi_mamdani = (hasil_df["kategori_mamdani"] == hasil_df["kategori_asli"]).mean() * 100
+    akurasi_sugeno = (hasil_df["kategori_sugeno"] == hasil_df["kategori_asli"]).mean() * 100
 
-    akurasi_mamdani_kualitas = (abs(hasil_df["kualitas_mamdani"] - hasil_df["kualitas_asli"]) <= 1).mean() * 100
-    akurasi_sugeno_kualitas = (abs(hasil_df["kualitas_sugeno"] - hasil_df["kualitas_asli"]) <= 1).mean() * 100
+    akurasi_mamdani_kualitas = (
+        abs(hasil_df["kualitas_mamdani"] - hasil_df["kualitas_asli"]) <= 1
+    ).mean() * 100
+    akurasi_sugeno_kualitas = (
+        abs(hasil_df["kualitas_sugeno"] - hasil_df["kualitas_asli"]) <= 1
+    ).mean() * 100
 
     metrik = {
-        "akurasi_mamdani_kategori": akurasi_mamdani_kategori,
-        "akurasi_sugeno_kategori": akurasi_sugeno_kategori,
+        "akurasi_mamdani_kategori": akurasi_mamdani,
+        "akurasi_sugeno_kategori": akurasi_sugeno,
         "akurasi_mamdani_kualitas": akurasi_mamdani_kualitas,
         "akurasi_sugeno_kualitas": akurasi_sugeno_kualitas,
     }
     return hasil_df, metrik
 
 
-# =========================================================
-# 6. FUNGSI PLOT
-# =========================================================
+# =====================================================================
+# 6. FUNGSI VISUALISASI
+# =====================================================================
 
-_WARNA = {
-    "rendah": "tab:blue", "sedang": "tab:orange", "tinggi": "tab:red",
-    "normal": "tab:green", "asam": "tab:blue", "basa": "tab:red",
-    "buruk": "tab:red", "standar": "tab:orange", "bagus": "tab:green",
-}
+# Versi vektor (untuk menggambar kurva fungsi keanggotaan)
+triangle_vec = np.vectorize(perhitungan_triangle)
+trapez_vec = np.vectorize(perhitungan_trapezoidal)
 
 
-def plot_membership(x_range, curves, judul, xlabel, nilai_input=None):
-    fig, ax = plt.subplots(figsize=(6.5, 3.6))
-    for label, y in curves.items():
-        ax.plot(x_range, y, label=label.capitalize(), color=_WARNA.get(label), linewidth=2)
+def plot_membership(x_vals, mf_dict, judul, xlabel, nilai_input=None):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    warna = ["tab:blue", "tab:orange", "tab:red", "tab:green"]
+    for i, (label, y) in enumerate(mf_dict.items()):
+        ax.plot(x_vals, y, label=label.capitalize(), color=warna[i % len(warna)], linewidth=2)
     if nilai_input is not None:
-        ax.axvline(nilai_input, color="black", linestyle="--", linewidth=1.5,
-                   label=f"Input = {nilai_input:.3g}")
-    ax.set_title(judul, fontweight="bold")
+        ax.axvline(nilai_input, color="black", linestyle=":", linewidth=1.5,
+                    label=f"Input = {nilai_input:.2f}")
+    ax.set_title(f"Fungsi Keanggotaan: {judul}", fontweight="bold")
     ax.set_xlabel(xlabel)
     ax.set_ylabel("\u03bc(x)")
     ax.legend(fontsize=8)
-    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.grid(True, linestyle="--", alpha=0.5)
     fig.tight_layout()
     return fig
 
@@ -315,43 +356,45 @@ def plot_defuzzifikasi(hasil):
     return fig
 
 
-# =========================================================
+# =====================================================================
 # 7. STREAMLIT APP
-# =========================================================
+# =====================================================================
 
 st.set_page_config(page_title="Fuzzy Wine Quality (Mamdani & Sugeno)", layout="wide")
 
-st.title("\U0001F377 Sistem Fuzzy Mamdani & Sugeno \u2014 Prediksi Kualitas Wine")
+st.title("\U0001F377 Sistem Fuzzy Mamdani & Sugeno \u2014 Prediksi Kualitas White Wine")
 st.caption(
-    "Gabungan dari notebook `tubes_DKA_ver3.ipynb` (engine fuzzy) dan "
-    "`Menghitung_Akurasi.ipynb` (evaluasi akurasi)."
+    "Aplikasi hasil gabungan dari notebook `tubes_DKA_ver3.ipynb` (mesin fuzzy) "
+    "dan `Menghitung_Akurasi.ipynb` (evaluasi akurasi pada dataset)."
 )
 
-tab_prediksi, tab_evaluasi = st.tabs(["\U0001F52E Prediksi Tunggal", "\U0001F4CA Evaluasi Dataset (Akurasi)"])
+tab_prediksi, tab_evaluasi = st.tabs(
+    ["\U0001F52E Prediksi Tunggal", "\U0001F4CA Evaluasi Dataset (Akurasi)"]
+)
 
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
 # TAB 1 : PREDIKSI TUNGGAL
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
 with tab_prediksi:
     st.subheader("Masukkan Parameter Wine")
     c1, c2, c3 = st.columns(3)
     with c1:
-        fa = st.number_input("Fixed Acidity (0.0 - 20.0)", min_value=0.0, max_value=20.0, value=7.0, step=0.1)
-        rs = st.number_input("Residual Sugar (0.0 - 70.0)", min_value=0.0, max_value=70.0, value=6.0, step=0.1)
+        fsd = st.number_input("Free Sulfur Dioxide (0 - 100)", min_value=0.0, max_value=100.0, value=35.0, step=1.0)
+        rs = st.number_input("Residual Sugar (0 - 70)", min_value=0.0, max_value=70.0, value=6.0, step=0.1)
     with c2:
-        d = st.number_input("Density (0.985 - 1.04)", min_value=0.985, max_value=1.04, value=0.995, step=0.001, format="%.4f")
-        p = st.number_input("pH (2.5 - 4.2)", min_value=2.5, max_value=4.2, value=3.2, step=0.01)
+        ca = st.number_input("Citric Acid (0.0 - 1.66)", min_value=0.0, max_value=1.66, value=0.30, step=0.01)
+        p = st.number_input("pH (2.7 - 4.0)", min_value=2.7, max_value=4.0, value=3.2, step=0.01)
     with c3:
-        s = st.number_input("Sulphates (0.1 - 1.4)", min_value=0.1, max_value=1.4, value=0.5, step=0.01)
-        a = st.number_input("Alcohol (%) (7.0 - 16.0)", min_value=7.0, max_value=16.0, value=10.5, step=0.1)
+        s = st.number_input("Sulphates (0.2 - 1.2)", min_value=0.2, max_value=1.2, value=0.5, step=0.01)
+        a = st.number_input("Alcohol (%) (8.0 - 15.0)", min_value=8.0, max_value=15.0, value=10.5, step=0.1)
 
     if st.button("Hitung Kualitas", type="primary"):
-        st.session_state["hasil_prediksi"] = proses_fuzzy(fa, rs, d, p, s, a)
-        st.session_state["input_prediksi"] = (fa, rs, d, p, s, a)
+        st.session_state["hasil_prediksi"] = proses_fuzzy(fsd, rs, ca, p, s, a)
+        st.session_state["input_prediksi"] = (fsd, rs, ca, p, s, a)
 
     if "hasil_prediksi" in st.session_state:
         hasil = st.session_state["hasil_prediksi"]
-        fa, rs, d, p, s, a = st.session_state["input_prediksi"]
+        fsd, rs, ca, p, s, a = st.session_state["input_prediksi"]
 
         st.markdown("### Hasil Inferensi (\u03b1-predikat)")
         m1, m2, m3 = st.columns(3)
@@ -372,26 +415,26 @@ with tab_prediksi:
         st.pyplot(plot_defuzzifikasi(hasil))
 
         with st.expander("Lihat Fungsi Keanggotaan Setiap Variabel Input"):
-            x_fa = np.linspace(0, 17, 300)
+            x_fsd = np.linspace(0, 100, 300)
             x_rs = np.linspace(0, 30, 300)
-            x_den = np.linspace(0.985, 1.01, 300)
+            x_ca = np.linspace(0, 1.5, 300)
             x_ph = np.linspace(2.5, 4.2, 300)
             x_sul = np.linspace(0.1, 1.4, 300)
             x_al = np.linspace(7, 16, 300)
 
             g1, g2 = st.columns(2)
             with g1:
-                st.pyplot(plot_membership(x_fa, {
-                    "rendah": trapez_vec(x_fa, 3, 3, 5, 6),
-                    "sedang": trapez_vec(x_fa, 5, 6, 8, 9),
-                    "tinggi": trapez_vec(x_fa, 8, 10, 15, 15),
-                }, "Fixed Acidity", "Nilai Fixed Acidity", fa))
+                st.pyplot(plot_membership(x_fsd, {
+                    "rendah": trapez_vec(x_fsd, 0, 0, 20, 30),
+                    "sedang": trapez_vec(x_fsd, 20, 30, 45, 60),
+                    "tinggi": trapez_vec(x_fsd, 45, 60, 100, 100),
+                }, "Free Sulfur Dioxide", "Nilai Free Sulfur Dioxide", fsd))
 
-                st.pyplot(plot_membership(x_den, {
-                    "rendah": trapez_vec(x_den, 0.987, 0.987, 0.992, 0.994),
-                    "normal": trapez_vec(x_den, 0.992, 0.994, 0.998, 1.0),
-                    "tinggi": trapez_vec(x_den, 0.998, 1.0, 1.04, 1.04),
-                }, "Density", "Nilai Density", d))
+                st.pyplot(plot_membership(x_ca, {
+                    "rendah": trapez_vec(x_ca, 0.00, 0.00, 0.20, 0.30),
+                    "sedang": trapez_vec(x_ca, 0.20, 0.30, 0.40, 0.50),
+                    "tinggi": trapez_vec(x_ca, 0.40, 0.50, 1.66, 1.66),
+                }, "Citric Acid", "Nilai Citric Acid", ca))
 
                 st.pyplot(plot_membership(x_sul, {
                     "rendah": trapez_vec(x_sul, 0.2, 0.2, 0.4, 0.5),
@@ -419,14 +462,15 @@ with tab_prediksi:
     else:
         st.info("Atur parameter di atas lalu klik **Hitung Kualitas**.")
 
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
 # TAB 2 : EVALUASI DATASET / AKURASI
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
 with tab_evaluasi:
     st.subheader("Evaluasi Akurasi pada Dataset")
     st.write(
-        "Unggah file CSV dengan kolom: `fixed acidity`, `residual sugar`, `density`, "
-        "`pH`, `sulphates`, `alcohol`, `quality` (format seperti `winequality-white-indonesia.csv`)."
+        "Unggah file CSV dengan kolom: `free sulfur dioxide`, `residual sugar`, "
+        "`citric acid`, `pH`, `sulphates`, `alcohol`, `quality` "
+        "(format seperti `winequality-white-indonesia.csv`)."
     )
 
     uploaded = st.file_uploader("Upload dataset (.csv)", type=["csv"])
@@ -441,19 +485,21 @@ with tab_evaluasi:
         st.write(f"Jumlah baris: **{len(df)}**")
         st.dataframe(df.head())
 
-        kolom_perlu = {"fixed acidity", "residual sugar", "density", "pH", "sulphates", "alcohol", "quality"}
-        if not kolom_perlu.issubset(set(df.columns)):
-            st.error(f"Kolom berikut belum ada di dataset: {kolom_perlu - set(df.columns)}")
+        kolom_kurang = set(KOLOM_DIBUTUHKAN) - set(df.columns)
+        if kolom_kurang:
+            st.error(f"Kolom berikut belum ada di dataset: {kolom_kurang}")
         else:
             if st.button("Jalankan Evaluasi", type="primary"):
                 with st.spinner("Menghitung fuzzy inference untuk setiap baris..."):
                     hasil_df, metrik = evaluasi_dataset(df)
                 st.session_state["hasil_df"] = hasil_df
                 st.session_state["metrik"] = metrik
+                st.session_state["df_evaluasi"] = df
 
             if "hasil_df" in st.session_state:
                 hasil_df = st.session_state["hasil_df"]
                 metrik = st.session_state["metrik"]
+                df_eval = st.session_state["df_evaluasi"]
 
                 st.markdown("### Hasil Akurasi")
                 ak1, ak2 = st.columns(2)
@@ -463,6 +509,24 @@ with tab_evaluasi:
                 with ak2:
                     st.metric("Akurasi Sugeno (kategori)", f"{metrik['akurasi_sugeno_kategori']:.2f}%")
                     st.metric("Akurasi Sugeno (kualitas \u00b11)", f"{metrik['akurasi_sugeno_kualitas']:.2f}%")
+
+                st.markdown("### Confusion Matrix")
+                labels = ["buruk", "standar", "bagus"]
+                cm1, cm2 = st.columns(2)
+                with cm1:
+                    st.write("**Mamdani**")
+                    cm_mamdani = confusion_matrix(hasil_df["kategori_asli"], hasil_df["kategori_mamdani"], labels=labels)
+                    cm_mamdani_df = pd.DataFrame(cm_mamdani,
+                                                  index=[f"Asli {i}" for i in labels],
+                                                  columns=[f"Pred {i}" for i in labels])
+                    st.dataframe(cm_mamdani_df)
+                with cm2:
+                    st.write("**Sugeno**")
+                    cm_sugeno = confusion_matrix(hasil_df["kategori_asli"], hasil_df["kategori_sugeno"], labels=labels)
+                    cm_sugeno_df = pd.DataFrame(cm_sugeno,
+                                                 index=[f"Asli {i}" for i in labels],
+                                                 columns=[f"Pred {i}" for i in labels])
+                    st.dataframe(cm_sugeno_df)
 
                 st.markdown("### Detail Hasil per Baris")
                 st.dataframe(hasil_df, use_container_width=True)
